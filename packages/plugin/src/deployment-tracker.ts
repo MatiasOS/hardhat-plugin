@@ -1,6 +1,10 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import type { ArtifactData, AddressMap } from "./artifacts.js";
+import {
+  toExplorerBuildInfo,
+  type ArtifactData,
+  type AddressMap,
+} from "./artifacts.js";
 import { resolveSourceCode } from "./source-resolver.js";
 
 interface CompiledArtifact {
@@ -96,6 +100,7 @@ export class DeploymentTracker {
     };
 
     // Try to load build info (before source, which falls back to it)
+    let buildInfo: unknown;
     if (artifact.buildInfoId) {
       const buildInfoPath = path.join(
         this.projectRoot,
@@ -105,7 +110,7 @@ export class DeploymentTracker {
       );
       if (existsSync(buildInfoPath)) {
         try {
-          entry.buildInfo = JSON.parse(readFileSync(buildInfoPath, "utf-8"));
+          buildInfo = JSON.parse(readFileSync(buildInfoPath, "utf-8"));
         } catch {
           // ignore
         }
@@ -118,9 +123,12 @@ export class DeploymentTracker {
         projectRoot: this.projectRoot,
         sourceName: artifact.sourceName,
         inputSourceName: artifact.inputSourceName,
-        buildInfo: entry.buildInfo,
+        buildInfo,
       });
     }
+
+    // Keep only the build info fields the explorer reads
+    entry.buildInfo = toExplorerBuildInfo(buildInfo);
 
     this.trackedDeployments[contractAddress.toLowerCase()] = entry;
   }

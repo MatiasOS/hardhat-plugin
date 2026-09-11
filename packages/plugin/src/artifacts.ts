@@ -2,13 +2,28 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { resolveSourceCode } from "./source-resolver.js";
 
+/**
+ * The parts of a solc build info file the explorer reads: compiler version,
+ * source language and EVM version.
+ */
+export interface ExplorerBuildInfo {
+  solcVersion?: string;
+  solcLongVersion?: string;
+  input: {
+    language?: string;
+    settings: {
+      evmVersion?: string;
+    };
+  };
+}
+
 export interface ArtifactData {
   abi: unknown[];
   contractName: string;
   sourceName?: string;
   buildInfoId?: string;
   sourceCode?: string;
-  buildInfo?: unknown;
+  buildInfo?: ExplorerBuildInfo;
   deployments: string[];
 }
 
@@ -21,6 +36,39 @@ export type AddressMap = Record<string, ArtifactData>;
 const CHAIN_ID = 31337;
 
 let hasLoggedArtifacts = false;
+
+/**
+ * Reduce a solc build info file to the fields the explorer reads.
+ *
+ * Build info carries the full standard JSON input - every source in the
+ * compilation job - and each contract from that job points at the same file.
+ * Injecting it whole repeats megabytes per contract, overflows the browser's
+ * localStorage quota and leaves every contract showing as unverified. Source
+ * resolution falls back to `input.sources`, so trim only after it has run.
+ *
+ * @param buildInfo - Parsed build info, shape unverified
+ * @returns The fields the explorer reads, or undefined without build info
+ */
+export function toExplorerBuildInfo(
+  buildInfo: unknown,
+): ExplorerBuildInfo | undefined {
+  if (typeof buildInfo !== "object" || buildInfo === null) return undefined;
+
+  const { solcVersion, solcLongVersion, input } = buildInfo as {
+    solcVersion?: string;
+    solcLongVersion?: string;
+    input?: { language?: string; settings?: { evmVersion?: string } };
+  };
+
+  return {
+    solcVersion,
+    solcLongVersion,
+    input: {
+      language: input?.language,
+      settings: { evmVersion: input?.settings?.evmVersion },
+    },
+  };
+}
 
 export function findIgnitionDeployment(projectRoot: string): string | null {
   const deploymentPath = path.join(
@@ -112,6 +160,7 @@ export function loadArtifacts(
     };
 
     // Try to load build info
+    let buildInfo: unknown;
     if (artifactData.buildInfoId && existsSync(buildInfoDir)) {
       const buildInfoPath = path.join(
         buildInfoDir,
@@ -119,9 +168,7 @@ export function loadArtifacts(
       );
       if (existsSync(buildInfoPath)) {
         try {
-          artifactData.buildInfo = JSON.parse(
-            readFileSync(buildInfoPath, "utf-8"),
-          );
+          buildInfo = JSON.parse(readFileSync(buildInfoPath, "utf-8"));
         } catch {
           // Ignore build info errors
         }
@@ -134,9 +181,12 @@ export function loadArtifacts(
         projectRoot,
         sourceName: artifactData.sourceName,
         inputSourceName: artifact.inputSourceName as string | undefined,
-        buildInfo: artifactData.buildInfo,
+        buildInfo,
       });
     }
+
+    // Keep only the build info fields the explorer reads
+    artifactData.buildInfo = toExplorerBuildInfo(buildInfo);
 
     // Store by lowercase address
     addressMap[deployedAddress.toLowerCase()] = artifactData;
