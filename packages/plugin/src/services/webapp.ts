@@ -26,6 +26,26 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 /**
+ * localStorage key the explorer reads injected artifacts from.
+ */
+const ARTIFACTS_STORAGE_KEY = "OPENSCAN_ARTIFACTS_JSON_V1";
+
+/**
+ * Payload size, in characters, at which injection risks exceeding the
+ * browser's localStorage quota. Quotas run 5-10 MB per origin and a character
+ * can cost 2 bytes (Chromium stores any value holding a non-Latin-1 character
+ * as UTF-16), so the tightest quotas fit roughly 2.5M characters.
+ */
+const ARTIFACTS_WARN_CHARS = 2_000_000;
+
+/**
+ * Whether the oversized payload warning has been printed. Artifacts are
+ * re-injected on every HTML request, so an ungated warning would repeat on
+ * every page load.
+ */
+let hasWarnedPayloadSize = false;
+
+/**
  * WebappService - Custom HTTP server for serving static files
  * No external dependencies - uses only Node.js built-in modules
  * Fixed port: 3030
@@ -217,17 +237,30 @@ export class WebappService extends Service {
       return html;
     }
 
-    // Double-encode: first JSON.stringify produces the data string,
-    // second wraps it as a safe JS string literal with proper escaping.
-    const jsonString = JSON.stringify(JSON.stringify(artifacts));
+    const payload = JSON.stringify(artifacts);
+
+    if (!hasWarnedPayloadSize && payload.length > ARTIFACTS_WARN_CHARS) {
+      hasWarnedPayloadSize = true;
+      console.warn(
+        `[openscan] Injected artifacts are ${(payload.length / 1_000_000).toFixed(1)}M characters, near or over the browser's localStorage quota. Contracts may show as unverified.`,
+      );
+    }
+
+    // Double-encode: the serialized payload is wrapped again as a safe JS
+    // string literal with proper escaping.
+    const jsonString = JSON.stringify(payload);
 
     // Escape </script> to prevent premature tag closure
     const safeJsonString = jsonString.replace(/<\/script>/gi, "<\\/script>");
 
+    // Remove the key before writing it, so a failed write (e.g. over quota)
+    // leaves no artifacts from a previous deploy mapped onto reused addresses.
+    // Log the error name so QuotaExceededError is recognisable at a glance.
     const scriptTag =
       `<script>` +
-      `try{localStorage.setItem("OPENSCAN_ARTIFACTS_JSON_V1",${safeJsonString})}` +
-      `catch(e){console.warn("[openscan] Failed to inject artifacts:",e)}` +
+      `try{localStorage.removeItem("${ARTIFACTS_STORAGE_KEY}");` +
+      `localStorage.setItem("${ARTIFACTS_STORAGE_KEY}",${safeJsonString})}` +
+      `catch(e){console.warn("[openscan] Failed to inject artifacts ("+e.name+"):",e)}` +
       `</script>`;
 
     return html.replace("<body>", `<body>${scriptTag}`);
